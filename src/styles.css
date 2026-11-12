@@ -1,0 +1,226 @@
+import { useEffect, useMemo, useState } from 'react';
+import QRCode from 'qrcode';
+
+const defaultQuestions = [
+  {
+    id: 'overall-experience',
+    label: 'Overall, how satisfied are you with the DCRS service?',
+    type: 'radio',
+    options: ['Very satisfied', 'Satisfied', 'Neutral', 'Dissatisfied', 'Very dissatisfied'],
+  },
+  {
+    id: 'ease-of-use',
+    label: 'How easy was it to complete the task using DCRS?',
+    type: 'radio',
+    options: ['Very easy', 'Easy', 'Moderate', 'Difficult', 'Very difficult'],
+  },
+  {
+    id: 'comments',
+    label: 'Is there anything you would improve?',
+    type: 'textarea',
+    placeholder: 'Share your comments here...',
+  },
+];
+
+export default function App() {
+  const [selectedMode, setSelectedMode] = useState('chat');
+  const [email, setEmail] = useState('');
+  const [answers, setAnswers] = useState({
+    'overall-experience': '',
+    'ease-of-use': '',
+    comments: '',
+  });
+  const [status, setStatus] = useState('');
+  const [qrCode, setQrCode] = useState('');
+  const [authToken, setAuthToken] = useState('');
+  const [dashboardRows, setDashboardRows] = useState([]);
+
+  const currentUrl = useMemo(() => window.location.href, []);
+
+  useEffect(() => {
+    QRCode.toDataURL(currentUrl, { width: 220, margin: 1 })
+      .then((dataUrl) => setQrCode(dataUrl))
+      .catch(() => setQrCode(''));
+  }, [currentUrl]);
+
+  function handleAnswerChange(id, value) {
+    setAnswers((previous) => ({ ...previous, [id]: value }));
+  }
+
+  async function submitFeedback(event) {
+    event.preventDefault();
+    setStatus('Submitting...');
+
+    const payload = {
+      email,
+      mode: selectedMode,
+      answers,
+      createdAt: new Date().toISOString(),
+      retention: '30 days maximum',
+    };
+
+    const response = await fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      setStatus(data.message || 'Submission failed. Please try again.');
+      return;
+    }
+
+    setStatus('Feedback submitted successfully.');
+    setEmail('');
+    setAnswers({
+      'overall-experience': '',
+      'ease-of-use': '',
+      comments: '',
+    });
+  }
+
+  async function openDashboard() {
+    const token = window.prompt('Enter the admin token');
+    if (!token) return;
+    setAuthToken(token);
+
+    const response = await fetch(`/api/dashboard?token=${encodeURIComponent(token)}`);
+    const data = await response.json();
+
+    if (!response.ok) {
+      window.alert(data.message || 'Unable to access dashboard');
+      return;
+    }
+
+    setDashboardRows(data.items || []);
+  }
+
+  return (
+    <div className="page-shell">
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">DCRS</p>
+          <h1>IP Feedback</h1>
+        </div>
+      </header>
+
+      <main className="layout">
+        <section className="panel hero-panel">
+          <div className="hero-copy">
+            <p className="tag">Rethinking how we deliver government services</p>
+            <h2>Tell us what works, what doesn’t, and what should change.</h2>
+            <p>
+              This service is designed for Insolvency Practitioners to share quick, practical
+              feedback on the DCRS experience.
+            </p>
+          </div>
+
+          <div className="qr-box">
+            <div className="qr-card">
+              {qrCode ? <img src={qrCode} alt="QR code for this page" /> : <div className="qr-placeholder">QR</div>}
+            </div>
+            <p>Scan to access the feedback form on mobile.</p>
+          </div>
+        </section>
+
+        <section className="panel form-panel">
+          <h3>Share your feedback</h3>
+
+          <div className="mode-switch" role="tablist" aria-label="Feedback mode">
+            <button
+              type="button"
+              className={selectedMode === 'chat' ? 'active' : ''}
+              onClick={() => setSelectedMode('chat')}
+            >
+              Chat
+            </button>
+            <button
+              type="button"
+              className={selectedMode === 'voice' ? 'active' : ''}
+              onClick={() => setSelectedMode('voice')}
+            >
+              Voice
+            </button>
+          </div>
+
+          <form onSubmit={submitFeedback} className="feedback-form">
+            <label>
+              Email address
+              <input
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="name@example.com"
+                required
+              />
+            </label>
+
+            {defaultQuestions.map((question) => (
+              <div key={question.id} className="question-block">
+                <label>{question.label}</label>
+
+                {question.type === 'radio' && (
+                  <div className="option-grid">
+                    {question.options.map((option) => (
+                      <label key={option} className="radio-option">
+                        <input
+                          type="radio"
+                          name={question.id}
+                          value={option}
+                          checked={answers[question.id] === option}
+                          onChange={(event) => handleAnswerChange(question.id, event.target.value)}
+                        />
+                        <span>{option}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+
+                {question.type === 'textarea' && (
+                  <textarea
+                    value={answers[question.id] || ''}
+                    onChange={(event) => handleAnswerChange(question.id, event.target.value)}
+                    placeholder={question.placeholder}
+                    rows={5}
+                  />
+                )}
+              </div>
+            ))}
+
+            <button type="submit" className="primary-button">
+              Submit feedback
+            </button>
+            {status && <p className="status-message">{status}</p>}
+          </form>
+        </section>
+
+        <aside className="panel admin-panel">
+          <h3>Admin dashboard</h3>
+          <p>Only authorized users can view the feedback archive.</p>
+          <button type="button" className="secondary-button" onClick={openDashboard}>
+            Open dashboard
+          </button>
+
+          {dashboardRows.length > 0 && (
+            <div className="dashboard-list">
+              {dashboardRows.map((row) => (
+                <article key={row.id} className="dashboard-item">
+                  <strong>{row.email}</strong>
+                  <span>{row.mode}</span>
+                  <small>{new Date(row.createdAt).toLocaleString()}</small>
+                  <p>{row.answers?.comments || 'No comment provided'}</p>
+                </article>
+              ))}
+            </div>
+          )}
+
+          {authToken && dashboardRows.length === 0 && (
+            <p className="status-message">No stored submissions yet.</p>
+          )}
+        </aside>
+      </main>
+    </div>
+  );
+}
