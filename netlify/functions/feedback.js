@@ -1,60 +1,46 @@
-export async function handler(event) {
-  if (event.httpMethod !== 'POST') {
-    return {
-      statusCode: 405,
-      body: JSON.stringify({ message: 'Method not allowed.' }),
-      headers: { 'Content-Type': 'application/json' },
-    };
-  }
+import { getStore } from '@netlify/blobs';
 
-  const apiKey = process.env.ELEVENLABS_API_KEY;
-  const agentId = process.env.ELEVENLABS_AGENT_ID;
+const json = (status, body) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
 
-  if (!apiKey || !agentId) {
-    return {
-      statusCode: 501,
-      body: JSON.stringify({
-        message:
-          'Set ELEVENLABS_API_KEY and ELEVENLABS_AGENT_ID in Netlify environment variables to enable voice feedback.',
-      }),
-      headers: { 'Content-Type': 'application/json' },
-    };
+function getThirtyDayExpiry() {
+  const now = new Date();
+  now.setDate(now.getDate() + 30);
+  return now.toISOString();
+}
+
+export default async (req) => {
+  if (req.method !== 'POST') {
+    return json(405, { message: 'Method not allowed.' });
   }
 
   try {
-    const response = await fetch('https://api.elevenlabs.io/v1/convai/conversations/get_signed_url', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'xi-api-key': apiKey,
-      },
-      body: JSON.stringify({ agent_id: agentId }),
-    });
+    const payload = await req.json().catch(() => ({}));
+    const email = String(payload.email || '').trim();
 
-    const payload = await response.json();
-
-    if (!response.ok) {
-      return {
-        statusCode: response.status,
-        body: JSON.stringify({
-          message: payload?.message || 'Unable to generate a signed URL for the voice agent.',
-        }),
-        headers: { 'Content-Type': 'application/json' },
-      };
+    if (!email || !email.includes('@')) {
+      return json(400, { message: 'A valid email address is required.' });
     }
 
-    return {
-      statusCode: 200,
-      body: JSON.stringify(payload),
-      headers: { 'Content-Type': 'application/json' },
+    const record = {
+      id: `submission-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      email,
+      mode: payload.mode === 'voice' ? 'voice' : 'chat',
+      answers: payload.answers && typeof payload.answers === 'object' ? payload.answers : {},
+      createdAt: new Date().toISOString(),
+      expiresAt: getThirtyDayExpiry(),
+      retention: '30 days',
     };
+
+    const store = getStore({ name: 'feedback-submissions', consistency: 'strong' });
+    await store.setJSON(record.id, record);
+
+    return json(200, { success: true, item: record });
   } catch (error) {
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
-        message: 'Unexpected server error while creating the voice session.',
-      }),
-      headers: { 'Content-Type': 'application/json' },
-    };
+    console.error('Failed to save feedback', error);
+    return json(500, { message: 'Unable to save your feedback.' });
   }
-}
+};
