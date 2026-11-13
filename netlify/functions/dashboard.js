@@ -1,56 +1,48 @@
 import { getStore } from '@netlify/blobs';
 
-const store = getStore({ name: 'feedback-submissions' });
+const json = (status, body) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+  });
 
-function getThirtyDayExpiry() {
-  const now = new Date();
-  now.setDate(now.getDate() + 30);
-  return now.toISOString();
-}
+export default async (req) => {
+  if (req.method !== 'GET') {
+    return json(405, { message: 'Method not allowed.' });
+  }
 
-export async function handler(event) {
-  if (event.httpMethod !== 'POST') {
-    return {
-      statusCode: 405,
-      body: JSON.stringify({ message: 'Method not allowed.' }),
-      headers: { 'Content-Type': 'application/json' },
-    };
+  const adminToken = process.env.ADMIN_TOKEN;
+  if (!adminToken) {
+    return json(501, { message: 'Set ADMIN_TOKEN in Netlify environment variables to enable the dashboard.' });
+  }
+
+  const auth = req.headers.get('authorization') || '';
+  const provided = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  if (provided !== adminToken) {
+    return json(401, { message: 'Invalid admin token.' });
   }
 
   try {
-    const payload = JSON.parse(event.body || '{}');
-    const email = String(payload.email || '').trim();
+    const store = getStore({ name: 'feedback-submissions', consistency: 'strong' });
+    const { blobs } = await store.list();
+    const now = Date.now();
+    const items = [];
 
-    if (!email || !email.includes('@')) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({ message: 'A valid email address is required.' }),
-        headers: { 'Content-Type': 'application/json' },
-      };
+    for (const { key } of blobs) {
+      const record = await store.get(key, { type: 'json' });
+      if (!record) continue;
+      // Enforce the 30-day retention policy: purge anything past its expiry.
+      if (record.expiresAt && new Date(record.expiresAt).getTime() < now) {
+        await store.delete(key);
+        continue;
+      }
+      items.push(record);
     }
 
-    const record = {
-      id: `submission-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      email,
-      mode: payload.mode || 'chat',
-      answers: payload.answers || {},
-      createdAt: new Date().toISOString(),
-      expiresAt: getThirtyDayExpiry(),
-      retention: '30 days',
-    };
-
-    await store.setJSON(record.id, record);
-
-    return {
-      statusCode: 200,
-      body: JSON.stringify({ success: true, item: record }),
-      headers: { 'Content-Type': 'application/json' },
-    };
+    items.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    return json(200, { items });
   } catch (error) {
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ message: 'Unable to save your feedback.' }),
-      headers: { 'Content-Type': 'application/json' },
-    };
+    console.error('Failed to load dashboard', error);
+    return json(500, { message: 'Unable to load feedback submissions.' });
   }
-}
+};
